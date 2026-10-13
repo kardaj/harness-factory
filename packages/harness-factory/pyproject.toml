@@ -1,0 +1,23 @@
+[project]
+name = "harness-factory"
+version = "0.3.0"
+description = "Describe agent environments once and render Codex and Claude Code homes."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+  "harness-manifest",
+  "harness-secrets",
+  "tomlkit>=0.13.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.uv.sources]
+harness-manifest = { workspace = true }
+harness-secrets = { workspace = true }

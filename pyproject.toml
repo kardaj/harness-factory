@@ -1,0 +1,18 @@
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[dependency-groups]
+dev = [
+  "harness-factory",
+  "harness-manifest",
+  "harness-secrets",
+  "ruff>=0.15.6,<0.16",
+]
+
+[tool.uv.sources]
+harness-factory = { workspace = true }
+harness-manifest = { workspace = true }
+harness-secrets = { workspace = true }
+
+[tool.ruff]
+target-version = "py312"
