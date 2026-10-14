@@ -37,7 +37,7 @@ class PortableManifestTests(unittest.TestCase):
                 codex_only(Path("~/.local/state/cli")),
             ),
         )
-        self.assertEqual(SCHEMA_VERSION, 3)
+        self.assertEqual(SCHEMA_VERSION, 4)
         self.assertEqual(from_json(to_json(tool)), tool)
         self.assertEqual(json.loads(to_json(tool))["writable_roots"][0], "${CLI_HOME}")
         resolved = resolve_manifest(
@@ -99,7 +99,7 @@ class PortableManifestTests(unittest.TestCase):
         )
         migrated = from_json(original)
         self.assertEqual(migrated.writable_roots, (Path("/cache/cli"),))
-        self.assertEqual(json.loads(to_json(migrated))["schema_version"], 3)
+        self.assertEqual(json.loads(to_json(migrated))["schema_version"], 4)
         with self.assertRaisesRegex(ValueError, "schema_version 1.*absolute"):
             from_json(
                 '{"schema_version": 1, "name": "cli", "writable_roots": ["~/.cache/cli"]}'
@@ -142,4 +142,4 @@ class PortableManifestTests(unittest.TestCase):
             '"writable_roots": ["${CLI_HOME}", "~/.cache/cli"]}'
         )
         self.assertEqual(tool.optional_vars, ())
-        self.assertEqual(json.loads(to_json(tool))["schema_version"], 3)
+        self.assertEqual(json.loads(to_json(tool))["schema_version"], 4)

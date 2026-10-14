@@ -165,7 +165,7 @@ def _layer(
 ) -> dict[str, Any]:
     """Convert one file's fields to ``Environment`` values without merging."""
     known = {field.name for field in fields(Environment)} - {"name", "tools"}
-    unsupported = {"agents", "modes", "notification"}
+    unsupported = {"agents", "modes", "notification", "skills"}
     unknown = sorted(set(data) - (known - unsupported))
     if unknown:
         raise ValueError(f"unknown or unsupported fields: {unknown}")

@@ -28,6 +28,7 @@ from harness_manifest.manifest import (
     writable_root_paths,
 )
 from harness_manifest.command_policy import parse_command_policy
+from harness_manifest.skills import Skill, SkillInvocation
 from harness_manifest.rule_files import dump_rule_set, load_rule_set, load_rule_sets
 from harness_manifest.tool_files import load_manifest, load_manifests
 from harness_manifest.rules import (
@@ -65,6 +66,8 @@ __all__ = [
     "RuleSet",
     "SandboxExclusions",
     "ShellCommand",
+    "Skill",
+    "SkillInvocation",
     "ToolInstall",
     "ToolManifest",
     "WritableRoot",

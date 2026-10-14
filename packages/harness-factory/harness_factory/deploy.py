@@ -10,6 +10,7 @@ from harness_factory.managed_files import (
 )
 from harness_factory.models import Environment, HarnessName, retired_agent_files
 from harness_factory.tree_diff import sync_tree
+from harness_factory.skills import deployment_skill_retirements
 
 CODEX_RUNTIME_PATHS = (Path("computer-use"),)
 
@@ -53,6 +54,9 @@ def deploy_rendered_home(
         if environment.has_secret_sources
         else {}
     )
+    retired_skills = deployment_skill_retirements(
+        expected_home, target_home, harness, managed_files, excluded_paths
+    )
     diffs = sync_tree(
         target_home,
         expected_home,
@@ -63,7 +67,7 @@ def deploy_rendered_home(
         config_key_redactions=config_redactions,
         managed_modes=private_modes,
         included_paths=managed_files,
-        retired_paths=retired_agent_files(environment, harness),
+        retired_paths=retired_agent_files(environment, harness) | retired_skills,
     )
     return len({diff.path for diff in diffs})
 

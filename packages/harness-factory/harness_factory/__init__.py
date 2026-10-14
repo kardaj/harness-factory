@@ -87,6 +87,8 @@ from harness_manifest.rules import (
     shell,
 )
 from harness_manifest import (
+    Skill,
+    SkillInvocation,
     ToolInstall,
     dump_rule_set,
     load_rule_set,
@@ -155,6 +157,8 @@ __all__ = [
     "SecretResolutionError",
     "SecretResolutionIssue",
     "SecretValue",
+    "Skill",
+    "SkillInvocation",
     "ToolApproval",
     "ToolInstall",
     "ToolManifest",
