@@ -16,6 +16,7 @@ from harness_manifest import (
     HarnessScopedValue,
     InstructionSet,
     RuleSet,
+    Skill,
     WritableRoot,
     has_relative_root,
 )
@@ -315,8 +316,13 @@ class Environment:
     # Applied manifests, recorded for install planning; adapters render only
     # what apply_tools lowered into the other fields.
     tools: tuple[ToolManifest, ...] = ()
+    skills: tuple[Skill, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.skills, tuple) or not all(
+            isinstance(skill, Skill) for skill in self.skills
+        ):
+            raise ValueError("environment skills must be a tuple of Skill")
         for name in self.retired_agents:
             if (
                 not name
@@ -338,6 +344,7 @@ class Environment:
             ("rule set", self.rules),
             ("instruction set", self.instruction_sets),
             ("tool", self.tools),
+            ("skill", self.skills),
         ):
             names = [item.name for item in items]
             repeated = sorted({name for name in names if names.count(name) > 1})

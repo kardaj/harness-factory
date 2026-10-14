@@ -9,7 +9,7 @@ Instruction files are local to one checkout, so manifests carry inline blocks.
 from __future__ import annotations
 
 import json
-from dataclasses import fields
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +26,9 @@ from harness_manifest.manifest import (
     has_relative_root,
 )
 from harness_manifest.rules import Choice, Rule, RulePart, RuleSet, ShellCommand
+from harness_manifest.skills import Skill
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def to_json(manifest: ToolManifest) -> str:
@@ -60,6 +61,7 @@ def to_dict(manifest: ToolManifest) -> dict[str, Any]:
         ],
         "vars": list(manifest.vars),
         "optional_vars": list(manifest.optional_vars),
+        "skills": [asdict(skill) for skill in manifest.skills],
         "rules": None if manifest.rules is None else rule_set_to_dict(manifest.rules),
         "writable_roots": [_root_value(root) for root in manifest.writable_roots],
         "network_domains": list(manifest.network_domains),
@@ -81,10 +83,15 @@ def from_dict(data: Any) -> ToolManifest:
 def _manifest(data: Any) -> ToolManifest:
     data = _object(data, "manifest", ToolManifest, extra=("schema_version",))
     version = data.pop("schema_version", None)
-    if type(version) is not int or version not in (1, 2, SCHEMA_VERSION):
+    if type(version) is not int or version not in (1, 2, 3, SCHEMA_VERSION):
         raise ValueError(
             f"unsupported tool manifest schema_version {version!r} "
-            f"(supported: 1, 2, {SCHEMA_VERSION})"
+            f"(supported: 1, 2, 3, {SCHEMA_VERSION})"
+        )
+    if version < 4 and "skills" in data:
+        raise ValueError(
+            f"schema_version {version} has unknown fields: ['skills']; "
+            "migrate to schema_version 4"
         )
     if version < 3 and "optional_vars" in data:
         raise ValueError(
@@ -92,6 +99,11 @@ def _manifest(data: Any) -> ToolManifest:
             "migrate to schema_version 3"
         )
     location = f"manifest {data.get('name')!r}"
+    if "skills" in data:
+        data["skills"] = tuple(
+            Skill(**_object(item, f"{location} skill", Skill))
+            for item in _list(data["skills"], f"{location} skills")
+        )
     if "installs" in data:
         data["installs"] = tuple(
             ToolInstall(**_tuples(_object(item, f"{location} install", ToolInstall)))

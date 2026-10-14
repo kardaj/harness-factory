@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from harness_factory.skills import managed_skill_paths
+
 MANAGED_FILES_MANIFEST = Path(".harness-factory-managed-files.json")
 MANAGED_FILES_MANIFEST_VERSION = 1
 
@@ -16,10 +18,20 @@ class ManagedFilesManifestError(ValueError):
 def write_managed_files_manifest(home: Path) -> Path:
     """Record the rendered files owned by the harness factory."""
 
+    # A rendered home can also contain provider-installed or personal skills.
+    # Own only the discovery files we generated, never their directory extras.
+    skill_paths = managed_skill_paths(home)
     files = sorted(
         path.relative_to(home).as_posix()
         for path in home.rglob("*")
-        if path.is_file() and path.relative_to(home) != MANAGED_FILES_MANIFEST
+        if path.is_file()
+        and path.relative_to(home) != MANAGED_FILES_MANIFEST
+        and ".harness-retired" not in path.relative_to(home).parts
+        and (
+            skill_paths is None
+            or path.relative_to(home).parts[0] != "skills"
+            or path.relative_to(home) in skill_paths
+        )
     )
     manifest_path = home / MANAGED_FILES_MANIFEST
     manifest_path.write_text(

@@ -37,6 +37,7 @@ from harness_factory.models import (
 from harness_manifest.rules import Choice, Rule, RulePart, RuleSet, expand_shell_command
 from harness_factory.serializers import dump_json, dump_toml
 from harness_secrets import SecretValue
+from harness_factory.skills import SKILLS_MANIFEST, skill_files, write_skills
 
 CODEX_MODEL_BY_TIER: dict[ReasoningTier, tuple[str, str]] = {
     "best": ("gpt-6-sol", "high"),
@@ -87,6 +88,31 @@ class HarnessAdapter(ABC):
     """Base interface for harness adapters."""
 
     name: Literal["codex", "claude"]
+
+    def _check_skill_collisions(self, environment: Environment) -> None:
+        paths = {SKILLS_MANIFEST} | {
+            path
+            for skill in environment.skills
+            for path in skill_files(skill.name, self.name)
+        }
+        other_paths = [
+            file.relative_path
+            for file in _home_files(environment)
+            if self.name in file.harnesses
+        ]
+        if self.name == "codex":
+            other_paths.extend(
+                agent.config_file or Path("agents") / f"{agent.name}.toml"
+                for agent in environment.agents
+            )
+        for path in other_paths:
+            if any(
+                path == owned or path in owned.parents or owned in path.parents
+                for owned in paths
+            ):
+                raise ValueError(
+                    f"home file or agent collides with managed skill: {path}"
+                )
 
     @abstractmethod
     def render(
@@ -238,12 +264,14 @@ class CodexAdapter(HarnessAdapter):
         # Kept for adapter interface parity; Codex notification paths are
         # runtime-relative.
         _ = runtime_output_dir
+        self._check_skill_collisions(environment)
         config_path = output_dir / "config.toml"
         dump_toml(self.render(environment, mode), config_path)
         _write_home_files(_home_files(environment), output_dir, self.name)
         self._write_instructions(environment, output_dir, mode)
         self._write_agent_configs(environment, output_dir, mode)
         self._write_rule_sets(environment, output_dir, mode)
+        write_skills(environment.skills, output_dir, self.name)
         return config_path
 
     def write_policy_preview(
@@ -252,11 +280,12 @@ class CodexAdapter(HarnessAdapter):
         output_dir: Path,
         mode: Mode | None = None,
     ) -> None:
-        """Write current Codex instructions and command rules only."""
+        """Write current Codex instructions, command rules, and skills."""
 
         output_dir.mkdir(parents=True, exist_ok=True)
         self._write_instructions(environment, output_dir, mode)
         self._write_rule_sets(environment, output_dir, mode)
+        write_skills(environment.skills, output_dir, self.name)
 
     @staticmethod
     def _render_sandbox_workspace_write(sandbox: SandboxPolicy) -> dict[str, Any]:
@@ -465,6 +494,7 @@ class ClaudeAdapter(HarnessAdapter):
         *,
         runtime_output_dir: Path | None = None,
     ) -> Path:
+        self._check_skill_collisions(environment)
         settings_path = output_dir / "settings.json"
         settings = self.render(environment, mode)
         if environment.notification is not None and environment.notification.enabled:
@@ -484,6 +514,7 @@ class ClaudeAdapter(HarnessAdapter):
         _write_home_files(_home_files(environment), output_dir, self.name)
         self._write_instructions(environment, output_dir, mode)
         self._write_agent_configs(environment, output_dir, mode)
+        write_skills(environment.skills, output_dir, self.name)
         return settings_path
 
     def write_policy_preview(
@@ -506,6 +537,8 @@ class ClaudeAdapter(HarnessAdapter):
         }
         dump_json(settings, output_dir / "settings.json")
         self._write_instructions(environment, output_dir, mode)
+
+        write_skills(environment.skills, output_dir, self.name)
 
     @staticmethod
     def _render_permissions(

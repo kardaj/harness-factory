@@ -16,6 +16,7 @@ from harness_manifest import checks
 
 from harness_manifest.instructions import InstructionSet
 from harness_manifest.rules import RuleSet
+from harness_manifest.skills import Skill
 
 HarnessName = Literal["codex", "claude"]
 InstallManager = Literal["uv", "bun", "brew", "cask"]
@@ -106,9 +107,14 @@ class ToolManifest:
     network_domains: tuple[str, ...] = ()
     instructions: InstructionSet | None = None
     optional_vars: tuple[str, ...] = ()
+    skills: tuple[Skill, ...] = ()
 
     def __post_init__(self) -> None:
         checks.string(self.name, "tool name")
+        checks.instances(self.skills, Skill, f"tool {self.name!r} skills")
+        names = [skill.name for skill in self.skills]
+        if len(set(names)) != len(names):
+            raise ValueError(f"tool {self.name!r} skills must have unique names")
         checks.instances(self.installs, ToolInstall, f"tool {self.name!r} installs")
         checks.identifiers(self.vars, f"tool {self.name!r} vars")
         checks.identifiers(self.optional_vars, f"tool {self.name!r} optional_vars")

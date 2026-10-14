@@ -21,7 +21,7 @@ from dataclasses import replace
 from typing import Any, TypeVar
 
 from harness_factory.models import Environment
-from harness_manifest import ToolInstall, ToolManifest
+from harness_manifest import Skill, ToolInstall, ToolManifest
 
 T = TypeVar("T")
 
@@ -30,6 +30,7 @@ def apply_tools(environment: Environment, *tools: ToolManifest) -> Environment:
     """Lower tool manifests into an environment; conflicting tools fail first."""
     for kind, key in (
         ("tool", lambda tool: (tool.name,)),
+        ("skill", lambda tool: tuple(skill.name for skill in tool.skills)),
         ("rule set", lambda tool: (tool.rules.name,) if tool.rules else ()),
         (
             "instruction set",
@@ -41,6 +42,7 @@ def apply_tools(environment: Environment, *tools: ToolManifest) -> Environment:
         if duplicates:
             raise ValueError(f"tools declare the same {kind}: {duplicates}")
     previous = {tool.name: tool for tool in environment.tools}
+    skills = _lower_skills(environment, tools, previous)
     _check_ownership(
         environment, tools, "rule set", _rules, environment.rules, previous
     )
@@ -72,12 +74,45 @@ def apply_tools(environment: Environment, *tools: ToolManifest) -> Environment:
     return replace(
         environment,
         tools=_upsert(environment.tools, tools, lambda tool: tool.name),
+        skills=skills,
         sandbox=sandbox,
         rules=_lower(environment.rules, tools, previous, _rules),
         instruction_sets=_lower(
             environment.instruction_sets, tools, previous, _instructions
         ),
     )
+
+
+def _lower_skills(
+    environment: Environment,
+    tools: tuple[ToolManifest, ...],
+    previous: dict[str, ToolManifest],
+) -> tuple[Skill, ...]:
+    owners = {
+        skill.name: tool.name for tool in environment.tools for skill in tool.skills
+    }
+    present = {skill.name for skill in environment.skills}
+    for tool in tools:
+        for skill in tool.skills:
+            if skill.name in present and owners.get(skill.name) != tool.name:
+                raise ValueError(
+                    f"tool {tool.name!r} cannot replace skill {skill.name!r} "
+                    f"owned by {owners.get(skill.name, 'the environment')!r}"
+                )
+    lowered = list(environment.skills)
+    for tool in tools:
+        old_names = (
+            {skill.name for skill in previous[tool.name].skills}
+            if tool.name in previous
+            else set()
+        )
+        position = next(
+            (index for index, skill in enumerate(lowered) if skill.name in old_names),
+            len(lowered),
+        )
+        lowered = [skill for skill in lowered if skill.name not in old_names]
+        lowered[position:position] = tool.skills
+    return tuple(lowered)
 
 
 def tool_owners(

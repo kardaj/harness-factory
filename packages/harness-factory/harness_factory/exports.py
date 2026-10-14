@@ -194,6 +194,7 @@ def _combine_manifest(
         network_domains=tuple(dict.fromkeys(domains + local.network_domains)),
         rules=_combine_rules(imported.rules, local.rules),
         instructions=_combine_instructions(imported.instructions, local.instructions),
+        skills=imported.skills + local.skills,
     )
     if has_relative_root(manifest.writable_roots):
         if home is None:

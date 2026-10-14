@@ -464,6 +464,7 @@ class ManifestExportTests(unittest.TestCase):
             )
             data = to_dict(manifest)
             data.pop("optional_vars")
+            data.pop("skills")
             data["schema_version"] = version
             with (
                 self.subTest(version=version),

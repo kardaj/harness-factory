@@ -122,7 +122,7 @@ class ManifestValidationTests(unittest.TestCase):
 
 class SerializationTests(unittest.TestCase):
     def test_empty_rule_sets_are_rejected_in_every_manifest_schema(self):
-        for version in (1, 2, 3):
+        for version in (1, 2, 3, 4):
             for rules in ({"name": "cli"}, {"name": "cli", "rules": []}):
                 with (
                     self.subTest(version=version, rules=rules),

@@ -13,6 +13,12 @@ from pathlib import Path
 
 import tomllib
 
+from harness_factory.skills import validate_skills
+from harness_factory.managed_files import (
+    MANAGED_FILES_MANIFEST,
+    load_managed_files_manifest,
+)
+
 
 @dataclass(frozen=True)
 class CheckResult:
@@ -66,6 +72,12 @@ def check_codex_home(home: Path, *, skip_missing_cli: bool = False) -> CheckResu
     config_path = home / "config.toml"
     if not config_path.is_file():
         return CheckResult("codex", home, False, "missing config.toml")
+    try:
+        if (home / MANAGED_FILES_MANIFEST).exists():
+            load_managed_files_manifest(home)
+        validate_skills(home, "codex")
+    except (ValueError, OSError) as error:
+        return CheckResult("codex", home, False, str(error))
 
     codex = shutil.which("codex")
     if codex is None:
@@ -102,6 +114,12 @@ def check_claude_home(home: Path, *, skip_missing_cli: bool = False) -> CheckRes
     settings_path = home / "settings.json"
     if not settings_path.is_file():
         return CheckResult("claude", home, False, "missing settings.json")
+    try:
+        if (home / MANAGED_FILES_MANIFEST).exists():
+            load_managed_files_manifest(home)
+        validate_skills(home, "claude")
+    except (ValueError, OSError) as error:
+        return CheckResult("claude", home, False, str(error))
 
     try:
         data = json.loads(settings_path.read_text())

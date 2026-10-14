@@ -2,10 +2,11 @@
 
 The tool manifest schema that CLIs publish so agent harnesses can expose them safely. It imports only the Python 3.12+ standard library, so any CLI can depend on it without pulling in a harness.
 
-A `ToolManifest` declares a CLI's installs, required and optional environment variable names, its command rule set, sandbox writable roots and network domains, and agent instructions. The package also provides:
+A `ToolManifest` declares a CLI's installs, required and optional environment variable names, its command rule set, sandbox writable roots and network domains, agent instructions, and on-demand skills. The package also provides:
 
 - `RuleSet`, `Rule`, `shell`, `choice`, `allow`, `ask`, and `deny` for command rules, and `instructions`, `block`, and `markdown` for instruction sets;
-- `to_dict`/`from_dict` and `to_json`/`from_json` for the versioned form (`schema_version` 3; schemas 1 and 2 remain readable), which reject unknown versions and fields;
+- `Skill` and `SkillInvocation` for self-contained workflows with explicit `user` or `auto` invocation;
+- `to_dict`/`from_dict` and `to_json`/`from_json` for the versioned form (`schema_version` 4; schemas 1–3 remain readable), which reject unknown versions and fields;
 - `load_rule_set(s)` and `dump_rule_set` for one TOML rule set per file, and `load_manifest(s)` for one TOML tool manifest per file;
 - `parse_command_policy` for a CLI's exported `lockdown` policy (schema 1).
 
@@ -75,8 +76,30 @@ writable_roots = ["${CLI_HOME}", "${CLI_CACHE}/data", "~/.local/state/cli"]
 
 The CLI exports these expressions unchanged. Before applying a manifest to an environment, the harness calls `resolve_manifest(manifest, home=home_path, variables=values)` with its own absolute home path and variable values. Variable values used in roots must be absolute paths or `~/` paths. A root using an optional variable absent from `values` is omitted, including its applicable harness scopes; a supplied but empty or invalid value still fails. A root using a missing required variable fails. Resolution never reads host environment variables, looks up files, or evaluates shell expressions. `SandboxPolicy` still requires resolved absolute roots.
 
+## On-demand skills
+
+Use a skill for a user-invoked workflow whose body should load only when used. A tool owns its skill wording; consumers select the tool and import its skills without rewriting them or appending them to always-loaded instructions. Each skill contains exactly `name`, `description`, `body`, and `invocation`; all four are required. `invocation = "user"` allows explicit invocation only; `"auto"` also allows the model to choose the skill. Neither setting executes a workflow during import or rendering.
+
+```toml
+schema_version = 4
+name = "agent-flow"
+
+[[skills]]
+name = "clarify-brief"
+description = "Clarify an agent-flow brief when the user invokes this workflow."
+invocation = "user"
+body = """Run `agent-flow agent discover` and follow its returned instruction. Retrieve the clarification workflow prompt through the CLI's agent command group and follow that prompt.
+"""
+```
+
+This is an illustrative entry point; agent-flow must supply the exact prompt-retrieval command and authoritative wording in its own manifest. An `implement-brief` entry point follows the same pattern with its implementation workflow. In Python, use `ToolManifest(name="cli", skills=(Skill(name="workflow", description="Run the selected workflow.", body="Retrieve and follow the CLI workflow prompt.", invocation="user"),))`.
+
+Skill names are unique within a manifest and use 1–64 lowercase ASCII letters, digits, and single hyphens between words. Provider-reserved names `synced` and `anthropic-skills` are rejected. Descriptions contain nonblank text with at most 1024 characters; bodies contain nonblank Markdown. Names are safe discovery-directory components. Skills contain their complete instruction body inline; installation paths, script declarations, supporting file bundles, and unknown fields are rejected. Commands mentioned in a body use the environment's selected CLI; the manifest does not execute them or grant permissions.
+
+During manifest onboarding, review every exported skill's name, description, body, and invocation policy. Check that triggers match the intended user request, workflow retrieval uses the CLI's supported commands, and the body preserves discovery and workflow ownership. Render a preview and inspect the skill files before deployment. Review and obtain user approval for any accompanying generated `AGENTS.md` or `CLAUDE.md` changes before applying those instruction changes.
+
 ## Schema migration
 
-New JSON and TOML use schema 3. Schemas 1 and 2 remain readable without `optional_vars`; schema 1 keeps its absolute-root restriction, and schema 2 keeps its portable-root support. Reading either and serializing it again emits schema 3 with `optional_vars = []`. To use optional variables, change `schema_version` to 3 and move the relevant names from `vars` to `optional_vars`; older schema versions reject the new field even when empty. Rule set file and command-policy schemas remain at version 1. Applications using `harness_factory.exports.ManifestExport` can import the installed CLI's manifest directly, keeping installation choices and any local policy in their application.
+New JSON and TOML use schema 4. Schemas 1–3 remain readable without `skills`; reading them and serializing again emits schema 4 with `skills = []`. To export skills, change `schema_version` to 4 and add `[[skills]]` entries; older versions reject `skills` even when empty. Schemas 1 and 2 remain readable without `optional_vars`; schema 1 keeps its absolute-root restriction, and schema 2 keeps its portable-root support. Reading either and serializing it again also emits `optional_vars = []`. Optional variables require schema 3 or later; move the relevant names from `vars` to `optional_vars`. Rule set file and command-policy schemas remain at version 1. Applications using `harness_factory.exports.ManifestExport` can import the installed CLI's manifest directly, keeping installation choices and any local policy in their application.
 
 Package 0.4.0 tightens validation without changing the schema version: replace bare sandbox exclusions with command prefixes ending in ` *`, and remove empty policies instead of exporting an empty rule set. These checks also apply when reading schemas 1 and 2.
