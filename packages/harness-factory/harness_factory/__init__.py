@@ -26,6 +26,8 @@ from harness_manifest.instructions import (
 )
 from harness_factory.models import (
     Agent,
+    ClaudeProfile,
+    SkillBundle,
     Environment,
     EnvVar,
     HarnessScopedValue,
@@ -117,6 +119,8 @@ from harness_factory.projects import (
 
 __all__ = [
     "Agent",
+    "ClaudeProfile",
+    "SkillBundle",
     "ClaudeAdapter",
     "CodexAdapter",
     "CredentialStore",

@@ -17,6 +17,7 @@ from harness_manifest.instructions import (
     InstructionSource,
     SandboxExclusions,
 )
+from harness_factory.addons import write_addons
 from harness_factory.models import (
     Agent,
     Environment,
@@ -131,11 +132,15 @@ class HarnessAdapter(ABC):
     ) -> Path:
         """Write rendered config files and return the main config path."""
 
-    @staticmethod
     def _merged_mcp_servers(
-        environment: Environment, mode: Mode | None
+        self, environment: Environment, mode: Mode | None
     ) -> tuple[ToolServer, ...]:
-        return environment.base_mcp_servers + (() if mode is None else mode.mcp_servers)
+        return tuple(
+            server
+            for server in environment.base_mcp_servers
+            + (() if mode is None else mode.mcp_servers)
+            if self.name in server.harnesses
+        )
 
     @staticmethod
     def _merged_agents(
@@ -272,6 +277,7 @@ class CodexAdapter(HarnessAdapter):
         self._write_agent_configs(environment, output_dir, mode)
         self._write_rule_sets(environment, output_dir, mode)
         write_skills(environment.skills, output_dir, self.name)
+        write_addons(environment, output_dir, self.name)
         return config_path
 
     def write_policy_preview(
@@ -326,6 +332,8 @@ class CodexAdapter(HarnessAdapter):
     def _render_mcp_servers(servers: tuple[ToolServer, ...]) -> dict[str, Any]:
         rendered: dict[str, Any] = {}
         for server in servers:
+            if "codex" not in server.harnesses:
+                continue
             if server.kind == "stdio":
                 value: dict[str, Any] = {
                     "command": server.command,
@@ -515,6 +523,7 @@ class ClaudeAdapter(HarnessAdapter):
         self._write_instructions(environment, output_dir, mode)
         self._write_agent_configs(environment, output_dir, mode)
         write_skills(environment.skills, output_dir, self.name)
+        write_addons(environment, output_dir, self.name)
         return settings_path
 
     def write_policy_preview(
@@ -605,6 +614,8 @@ class ClaudeAdapter(HarnessAdapter):
     def _render_mcp_servers(servers: tuple[ToolServer, ...]) -> dict[str, Any]:
         rendered: dict[str, Any] = {}
         for server in servers:
+            if "claude" not in server.harnesses:
+                continue
             if server.kind == "stdio":
                 value: dict[str, Any] = {
                     "command": server.command,

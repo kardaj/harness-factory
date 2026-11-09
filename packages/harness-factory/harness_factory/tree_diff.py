@@ -41,6 +41,7 @@ def diff_trees(
     managed_modes: ManagedModes | None = None,
     included_paths: frozenset[Path] | None = None,
     retired_paths: frozenset[Path] = frozenset(),
+    exact_paths: frozenset[Path] = frozenset(),
 ) -> list[TreeDiff]:
     """Return text diffs needed to turn found_dir into expected_dir."""
 
@@ -89,6 +90,7 @@ def diff_trees(
             found_path,
             expected_path,
             _removals_for(relative_path, config_key_removals),
+            exact=relative_path in exact_paths,
         )
         if found_bytes != expected_bytes:
             diffs.append(
@@ -169,6 +171,7 @@ def sync_tree(
     managed_modes: ManagedModes | None = None,
     included_paths: frozenset[Path] | None = None,
     retired_paths: frozenset[Path] = frozenset(),
+    exact_paths: frozenset[Path] = frozenset(),
 ) -> list[TreeDiff]:
     """Copy expected files into target_dir without removing unmanaged files."""
 
@@ -181,6 +184,7 @@ def sync_tree(
         managed_modes=managed_modes,
         included_paths=included_paths,
         retired_paths=retired_paths,
+        exact_paths=exact_paths,
     )
     for diff in diffs:
         target = target_dir / diff.path
@@ -210,6 +214,7 @@ def sync_tree(
                 target,
                 source,
                 _removals_for(relative_path, config_key_removals),
+                exact=relative_path in exact_paths,
             ),
             source,
             (managed_modes or {}).get(relative_path),
@@ -396,7 +401,11 @@ def _planned_bytes(
     found_path: Path,
     expected_path: Path,
     config_key_removals: tuple[ConfigKeyPath, ...] = (),
+    *,
+    exact: bool = False,
 ) -> bytes:
+    if exact:
+        return expected_path.read_bytes()
     if found_path.exists() and relative_path.suffix == ".json":
         found_data = json.loads(found_path.read_text())
         expected_data = json.loads(expected_path.read_text())

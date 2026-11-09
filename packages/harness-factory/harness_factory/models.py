@@ -176,12 +176,69 @@ class ToolServer:
     env_headers: dict[str, str] = field(default_factory=dict)
     tools: dict[str, Any] = field(default_factory=dict)
     tool_approvals: tuple[ToolApproval, ...] = ()
+    harnesses: tuple[HarnessName, ...] = ("codex", "claude")
 
     def __post_init__(self) -> None:
+        _validate_harnesses(self.harnesses)
         if self.kind == "stdio" and not self.command:
             raise ValueError(f"stdio tool server {self.name!r} requires command")
         if self.kind == "http" and not self.url:
             raise ValueError(f"http tool server {self.name!r} requires url")
+
+
+def _validate_harnesses(harnesses: tuple[HarnessName, ...]) -> None:
+    if (
+        not isinstance(harnesses, tuple)
+        or not harnesses
+        or len(set(harnesses)) != len(harnesses)
+        or any(name not in ("codex", "claude") for name in harnesses)
+    ):
+        raise ValueError("harnesses must be a nonempty tuple of distinct harness names")
+
+
+def _addon_name(name: str) -> None:
+    import re
+
+    if (
+        not isinstance(name, str)
+        or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name) is None
+        or len(name) > 64
+    ):
+        raise ValueError(
+            "Add-on names must be safe lowercase names of at most 64 characters"
+        )
+
+
+@dataclass(frozen=True)
+class SkillBundle:
+    """An external skill directory and its complete supporting files."""
+
+    name: str
+    source_dir: Path
+    harnesses: tuple[HarnessName, ...] = ("codex", "claude")
+
+    def __post_init__(self) -> None:
+        _addon_name(self.name)
+        _validate_harnesses(self.harnesses)
+        if not isinstance(self.source_dir, Path) or not self.source_dir.is_absolute():
+            raise ValueError("Skill bundle source_dir must be an absolute Path")
+
+
+@dataclass(frozen=True)
+class ClaudeProfile:
+    """A session-only plugin and extra MCP servers over an environment."""
+
+    name: str
+    description: str = "Optional session profile"
+    mcp_servers: tuple[ToolServer, ...] = ()
+    skill_bundles: tuple[SkillBundle, ...] = ()
+
+    def __post_init__(self) -> None:
+        _addon_name(self.name)
+        for items in (self.mcp_servers, self.skill_bundles):
+            names = [item.name for item in items]
+            if len(names) != len(set(names)):
+                raise ValueError("Profile repeats component names")
 
 
 @dataclass(frozen=True)
@@ -317,6 +374,8 @@ class Environment:
     # what apply_tools lowered into the other fields.
     tools: tuple[ToolManifest, ...] = ()
     skills: tuple[Skill, ...] = ()
+    skill_bundles: tuple[SkillBundle, ...] = ()
+    claude_profiles: tuple[ClaudeProfile, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.skills, tuple) or not all(
@@ -345,6 +404,8 @@ class Environment:
             ("instruction set", self.instruction_sets),
             ("tool", self.tools),
             ("skill", self.skills),
+            ("skill bundle", self.skill_bundles),
+            ("Claude profile", self.claude_profiles),
         ):
             names = [item.name for item in items]
             repeated = sorted({name for name in names if names.count(name) > 1})
@@ -358,6 +419,20 @@ class Environment:
         """Return whether generated configs for this environment require privacy."""
 
         return any(env_var.is_secret_source for env_var in self.env_vars)
+
+    def retired_mcp_servers_for(self, harness: HarnessName) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                (
+                    *self.retired_mcp_servers,
+                    *(
+                        server.name
+                        for server in self.base_mcp_servers
+                        if harness not in server.harnesses
+                    ),
+                )
+            )
+        )
 
     def mode_named(self, name: str) -> Mode:
         for mode in self.modes:

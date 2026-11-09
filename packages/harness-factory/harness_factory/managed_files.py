@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from harness_factory.addons import ADDONS_MANIFEST, load_addon_inventory
 from harness_factory.skills import managed_skill_paths
 
 MANAGED_FILES_MANIFEST = Path(".harness-factory-managed-files.json")
@@ -15,12 +16,18 @@ class ManagedFilesManifestError(ValueError):
     """Raised when a rendered home's managed-file manifest is invalid."""
 
 
-def write_managed_files_manifest(home: Path) -> Path:
+def write_managed_files_manifest(
+    home: Path, *, explicit_paths: frozenset[Path] = frozenset()
+) -> Path:
     """Record the rendered files owned by the harness factory."""
 
     # A rendered home can also contain provider-installed or personal skills.
     # Own only the discovery files we generated, never their directory extras.
     skill_paths = managed_skill_paths(home)
+    addons = frozenset()
+    if (home / ADDONS_MANIFEST).exists():
+        provider = json.loads((home / ADDONS_MANIFEST).read_text())["harness"]
+        addons = load_addon_inventory(home, provider)
     files = sorted(
         path.relative_to(home).as_posix()
         for path in home.rglob("*")
@@ -31,6 +38,8 @@ def write_managed_files_manifest(home: Path) -> Path:
             skill_paths is None
             or path.relative_to(home).parts[0] != "skills"
             or path.relative_to(home) in skill_paths
+            or path.relative_to(home) in addons
+            or path.relative_to(home) in explicit_paths
         )
     )
     manifest_path = home / MANAGED_FILES_MANIFEST

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from harness_factory.addons import addon_retirements, owned_addon_paths
 from harness_factory.managed_files import (
     ManagedFilesManifestError,
     load_managed_files_manifest,
@@ -54,6 +55,17 @@ def deploy_rendered_home(
         if environment.has_secret_sources
         else {}
     )
+    addon_paths = owned_addon_paths(expected_home, harness)
+    for path in addon_paths:
+        if path.parts[0] == "profiles" and path.name == "mcp.json":
+            private_modes[path] = 0o600
+            config_redactions[path] = (
+                ("mcpServers", "*", "headers", "*"),
+                ("mcpServers", "*", "env", "*"),
+            )
+    retired_addons = addon_retirements(
+        expected_home, target_home, harness, managed_files, excluded_paths
+    )
     retired_skills = deployment_skill_retirements(
         expected_home, target_home, harness, managed_files, excluded_paths
     )
@@ -67,7 +79,10 @@ def deploy_rendered_home(
         config_key_redactions=config_redactions,
         managed_modes=private_modes,
         included_paths=managed_files,
-        retired_paths=retired_agent_files(environment, harness) | retired_skills,
+        exact_paths=addon_paths,
+        retired_paths=retired_agent_files(environment, harness)
+        | retired_skills
+        | retired_addons,
     )
     return len({diff.path for diff in diffs})
 
@@ -77,7 +92,10 @@ def _retired_config_keys(
 ) -> dict[Path, tuple[tuple[str, ...], ...]]:
     if harness == "codex":
         removals = (
-            tuple(("mcp_servers", name) for name in environment.retired_mcp_servers)
+            tuple(
+                ("mcp_servers", name)
+                for name in environment.retired_mcp_servers_for("codex")
+            )
             + tuple(
                 ("shell_environment_policy", "set", name)
                 for name in environment.retired_env_vars
@@ -89,9 +107,10 @@ def _retired_config_keys(
         retired: dict[Path, tuple[tuple[str, ...], ...]] = {}
         if removals:
             retired[Path("config.toml")] = removals
-        if environment.retired_mcp_servers:
+        if environment.retired_mcp_servers_for("codex"):
             agent_removals = tuple(
-                ("mcp_servers", name) for name in environment.retired_mcp_servers
+                ("mcp_servers", name)
+                for name in environment.retired_mcp_servers_for("codex")
             )
             for agent in environment.agents:
                 agent_path = agent.config_file or Path("agents") / f"{agent.name}.toml"
@@ -99,9 +118,10 @@ def _retired_config_keys(
         return retired
 
     removals: dict[Path, tuple[tuple[str, ...], ...]] = {}
-    if environment.retired_mcp_servers:
+    if environment.retired_mcp_servers_for("claude"):
         removals[Path(".mcp.json")] = tuple(
-            ("mcpServers", name) for name in environment.retired_mcp_servers
+            ("mcpServers", name)
+            for name in environment.retired_mcp_servers_for("claude")
         )
     settings_removals = tuple(("env", name) for name in environment.retired_env_vars)
     if environment.retired_notification:

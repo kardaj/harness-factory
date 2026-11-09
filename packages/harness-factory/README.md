@@ -256,3 +256,35 @@ uv run --active python -m harness_factory --harness claude
 - The TOML serializer supports the subset emitted by Harness Factory, not arbitrary TOML.
 - Live review is useful but not exhaustive; it currently focuses on common model drift categories.
 - Codex and Claude are moving targets. Adapter tests should grow whenever a harness config surface is added.
+
+## Scoped servers, skill bundles, and Claude session profiles
+
+Environment schema version 2 adds `ToolServer.harnesses`, `Environment.skill_bundles`, and `Environment.claude_profiles`. Existing version 1 files retain their behavior; migrate a file by changing `schema_version` to `2` before using these fields. Version 1 rejects the new fields rather than silently widening their scope. A server defaults to both harnesses; `harnesses = ["claude"]` limits it to Claude, and deployment prunes an old entry from excluded harnesses.
+
+A `SkillBundle(name, source_dir, harnesses)` copies a complete skill directory, including references and executable assets, without symlinks. Its `SKILL.md` name must match the bundle name. An owned add-on inventory records the exact files: rendering and deployment refuse unowned collisions, archive retired owned files, and preserve unrelated local extras. Static `HomeFile` entries under `skills/` also enter the managed deployment inventory.
+
+A `ClaudeProfile` adds MCP servers and bundles for an explicitly selected session. Profiles render under `profiles/<name>` inside the existing Claude home. Each contains a skill-only plugin and a separate `mcp.json` combining the base environment's Claude servers with the profile's servers; a profile server with the same name replaces the base one for that profile. Normal Claude and Codex discovery do not load these additions. The application launches Claude with its existing `CLAUDE_CONFIG_DIR`, `--plugin-dir <home>/profiles/<name>`, `--mcp-config <home>/profiles/<name>/mcp.json`, and `--strict-mcp-config`. No second authentication home, global plugin installation, or settings changes are required. See the [Claude plugin manifest reference](https://code.claude.com/docs/en/plugins-reference) for session plugin layout.
+
+```toml
+schema_version = 2
+
+[base_mcp_servers.shared]
+kind = "http"
+url = "https://shared.example/mcp"
+harnesses = ["claude"]
+
+[claude_profiles.research]
+description = "Optional research session"
+
+[[claude_profiles.research.skill_bundles]]
+name = "research"
+source_dir = "${REPO}/skills/research"
+harnesses = ["claude"]
+
+[claude_profiles.research.mcp_servers.research]
+kind = "http"
+url = "https://research.example/mcp"
+harnesses = ["claude"]
+```
+
+Applications that stage a whole rendered tree should pass `exact_paths=addon_tree_paths(expected)` and include `retired_addon_files(found, expected)` in their retirement paths for both `sync_tree` and `diff_trees`; both helpers come from `harness_factory.addons`. Exact replacement prevents removed MCP servers or JSON asset keys from lingering. The standard `deploy_rendered_home` handles ownership, exact replacement, private MCP modes, and retirement itself. Profile files are copied as inactive data when a home is deployed; only the explicit session launcher activates them.

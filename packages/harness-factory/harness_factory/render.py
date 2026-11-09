@@ -39,7 +39,14 @@ def write_harness_homes(
                     else runtime_output_dir / relative_home
                 ),
             )
-            write_managed_files_manifest(output_dir / relative_home)
+            write_managed_files_manifest(
+                output_dir / relative_home,
+                explicit_paths=frozenset(
+                    file.relative_path
+                    for file in environment.home_files
+                    if adapter.name in file.harnesses
+                ),
+            )
             # The config is written 0o600 from creation; an existing home keeps
             # its mode until tightened here.
             if environment.has_secret_sources:
@@ -63,7 +70,10 @@ def retired_config_keys(
     removals: dict[Path, tuple[tuple[str, ...], ...]] = {}
     for environment in environments:
         codex_removals = (
-            tuple(("mcp_servers", name) for name in environment.retired_mcp_servers)
+            tuple(
+                ("mcp_servers", name)
+                for name in environment.retired_mcp_servers_for("codex")
+            )
             + tuple(
                 ("shell_environment_policy", "set", name)
                 for name in environment.retired_env_vars
@@ -71,7 +81,8 @@ def retired_config_keys(
             + tuple(("agents", name) for name in environment.retired_agents)
         )
         claude_mcp_removals = tuple(
-            ("mcpServers", name) for name in environment.retired_mcp_servers
+            ("mcpServers", name)
+            for name in environment.retired_mcp_servers_for("claude")
         )
         claude_settings_removals = tuple(
             ("env", name) for name in environment.retired_env_vars
@@ -81,9 +92,10 @@ def retired_config_keys(
             claude_settings_removals += (("hooks", "Notification"),)
         if codex_removals:
             removals[Path("codex") / environment.name / "config.toml"] = codex_removals
-        if environment.retired_mcp_servers:
+        if environment.retired_mcp_servers_for("codex"):
             retired_agent_mcp = tuple(
-                ("mcp_servers", name) for name in environment.retired_mcp_servers
+                ("mcp_servers", name)
+                for name in environment.retired_mcp_servers_for("codex")
             )
             for agent in environment.agents:
                 agent_path = agent.config_file or Path("agents") / f"{agent.name}.toml"
@@ -118,6 +130,14 @@ def secret_config_redactions(
 
     redactions: dict[Path, tuple[tuple[str, ...], ...]] = {}
     for environment in environments:
+        for profile in environment.claude_profiles:
+            redactions[
+                Path("claude")
+                / environment.name
+                / "profiles"
+                / profile.name
+                / "mcp.json"
+            ] = (("mcpServers", "*", "headers", "*"), ("mcpServers", "*", "env", "*"))
         redactions[Path("codex") / environment.name / "config.toml"] = (
             ("shell_environment_policy", "set", "*"),
         )
@@ -134,6 +154,14 @@ def secret_managed_modes(
 
     modes: dict[Path, int] = {}
     for environment in environments:
+        for profile in environment.claude_profiles:
+            modes[
+                Path("claude")
+                / environment.name
+                / "profiles"
+                / profile.name
+                / "mcp.json"
+            ] = 0o600
         if not environment.has_secret_sources:
             continue
         codex_home = Path("codex") / environment.name

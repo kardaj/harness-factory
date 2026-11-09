@@ -168,7 +168,7 @@ class EnvironmentFileTests(unittest.TestCase):
             (BASE.replace('"base-cli"', '"missing"'), "unknown rule set 'missing'"),
             (BASE.replace('"tool"]', '"missing"]'), "unknown tool 'missing'"),
             ("agents = []\n" + BASE, "unsupported fields: \\['agents'\\]"),
-            (BASE.replace("= 1", "= 2", 1), "schema_version 2"),
+            (BASE.replace("= 1", "= 3", 1), "schema_version 3"),
             (
                 BASE.replace(
                     "schema_version = 1", 'schema_version = 1\nextends = "base"'

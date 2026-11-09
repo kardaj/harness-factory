@@ -28,7 +28,9 @@ from typing import Any
 import tomllib
 
 from harness_factory.models import (
+    ClaudeProfile,
     EnvVar,
+    SkillBundle,
     Environment,
     HomeFile,
     SandboxPolicy,
@@ -47,7 +49,7 @@ from harness_manifest import (
     sandbox_exclusions,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _SCALARS = (
     "reasoning_tier",
@@ -57,7 +59,14 @@ _SCALARS = (
     "approval_policy",
     "retired_notification",
 )
-_NAMED = ("env_vars", "base_mcp_servers", "rules", "instruction_sets")
+_NAMED = (
+    "env_vars",
+    "base_mcp_servers",
+    "rules",
+    "instruction_sets",
+    "skill_bundles",
+    "claude_profiles",
+)
 _HARNESS_KEYS = ("default", "codex", "claude")
 _TOOL_OWNED = {
     "rules": lambda tool: tool.rules,
@@ -131,10 +140,21 @@ def _load(path: Path, variables: Mapping[str, str]) -> dict[str, Any]:
     except tomllib.TOMLDecodeError as error:
         raise ValueError(f"invalid TOML in {path}: {error}") from error
     version = data.pop("schema_version", None)
-    if type(version) is not int or version != SCHEMA_VERSION:
+    if type(version) is not int or version not in (1, SCHEMA_VERSION):
         raise ValueError(
             f"{path}: unsupported schema_version {version!r} "
             f"(supported: {SCHEMA_VERSION})"
+        )
+    if version == 1 and (
+        "skill_bundles" in data
+        or "claude_profiles" in data
+        or any(
+            "harnesses" in server
+            for server in data.get("base_mcp_servers", {}).values()
+        )
+    ):
+        raise ValueError(
+            f"{path}: scoped MCP servers, bundles and profiles require schema_version 2; migrate by changing schema_version to 2"
         )
     return _substitute(data, variables, path)
 
@@ -183,6 +203,12 @@ def _layer(
             layer[key] = tuple(_env_var(name, spec) for name, spec in value.items())
         elif key == "base_mcp_servers":
             layer[key] = tuple(_server(name, spec) for name, spec in value.items())
+        elif key == "skill_bundles":
+            layer[key] = tuple(_skill_bundle(spec) for spec in value)
+        elif key == "claude_profiles":
+            layer[key] = tuple(
+                _claude_profile(name, spec) for name, spec in value.items()
+            )
         elif key == "sandbox":
             layer[key] = _sandbox_fields(value)
         elif key == "home_files":
@@ -299,11 +325,42 @@ def _server(name: str, spec: Any) -> ToolServer:
         f"MCP server {name!r}",
         tuple(field.name for field in fields(ToolServer) if field.name != "name"),
     )
+    if "harnesses" in spec:
+        spec["harnesses"] = tuple(spec["harnesses"])
     if "args" in spec:
         spec["args"] = tuple(spec["args"])
     if "cwd" in spec:
         spec["cwd"] = Path(spec["cwd"])
     return ToolServer(name=name, **spec)
+
+
+def _skill_bundle(spec: Any) -> SkillBundle:
+    spec = _table(spec, "skill bundle", ("name", "source_dir", "harnesses"))
+    return SkillBundle(
+        **{
+            **spec,
+            "source_dir": Path(spec["source_dir"]),
+            "harnesses": tuple(spec.get("harnesses", ("codex", "claude"))),
+        }
+    )
+
+
+def _claude_profile(name: str, spec: Any) -> ClaudeProfile:
+    spec = _table(
+        spec,
+        f"Claude profile {name!r}",
+        ("description", "mcp_servers", "skill_bundles"),
+    )
+    return ClaudeProfile(
+        name=name,
+        description=spec.get("description", "Optional session profile"),
+        mcp_servers=tuple(
+            _server(key, value) for key, value in spec.get("mcp_servers", {}).items()
+        ),
+        skill_bundles=tuple(
+            _skill_bundle(value) for value in spec.get("skill_bundles", [])
+        ),
+    )
 
 
 def _sandbox_fields(spec: Any) -> dict[str, Any]:
