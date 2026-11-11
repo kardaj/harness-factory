@@ -13,12 +13,22 @@ import re
 import stat
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import tomlkit
+
 from harness_factory.adapters import CodexAdapter, render_claude_rules
+from harness_factory.project_sandbox import (
+    ProjectSandboxPolicy,
+    current_value,
+    load_ownership,
+    preview as sandbox_preview,
+    reconcile,
+)
 from harness_factory.models import HarnessName
+from harness_factory.serializers import dumps_toml
 from harness_manifest.rules import RuleSet
 
 SETTINGS_PATH = Path(".claude/settings.local.json")
@@ -85,8 +95,11 @@ class ProjectPolicy:
     name: str
     repositories: tuple[str, ...]
     rules: tuple[RuleSet, ...] = ()
+    sandbox: ProjectSandboxPolicy = field(default_factory=ProjectSandboxPolicy)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.sandbox, ProjectSandboxPolicy):
+            raise ValueError("ProjectPolicy.sandbox must be a ProjectSandboxPolicy")
         if not self.name or not self.repositories:
             raise ValueError("ProjectPolicy requires a name and repositories")
         if any(github_slug(repository) is None for repository in self.repositories):
@@ -205,9 +218,21 @@ def plan_project(
     state_text = _read(root, owner.state_path)
     state = _object(state_text, owner.state_path)
     if state_text is not None and (
-        type(state.get("schema")) is not int or state["schema"] != 1
+        type(state.get("schema")) is not int or state["schema"] not in (1, 2)
     ):
         raise ValueError(f"Unsupported project ownership schema in {owner.state_path}")
+    if state.get("schema") == 2 and set(state) != {
+        "schema",
+        "policy",
+        "repository",
+        "claude_permissions",
+        "claude_exclusions",
+        "sandbox_settings",
+    }:
+        raise ValueError(f"Invalid project ownership schema in {owner.state_path}")
+    if state.get("schema") == 1 and "sandbox_settings" in state:
+        raise ValueError("Project sandbox ownership requires schema 2")
+    sandbox_ownership = load_ownership(state.get("sandbox_settings", {}))
     permissions = _string_lists(state.get("claude_permissions", {}), owner.state_path)
     old_exclusions = _strings(state.get("claude_exclusions", []), owner.state_path)
     changes: list[ProjectFileChange] = []
@@ -238,9 +263,32 @@ def plan_project(
             CodexAdapter.render_rule_set(rule_set) for rule_set in policy.rules
         )
         add(owner.rules_path, rules)
-        # A config file activates the project layer, without copying home defaults.
-        if _read(root, Path(".codex/config.toml")) is None:
-            add(Path(".codex/config.toml"), owner.header)
+        # Only the declared scalar is changed; comments and unrelated TOML survive.
+        config_path = Path(".codex/config.toml")
+        config_text = _read(root, config_path)
+        local_binding = policy.sandbox.local_binding_for("codex")
+        if local_binding is not None or "codex" in sandbox_ownership:
+            try:
+                config = tomlkit.parse(
+                    config_text if config_text is not None else owner.header
+                )
+            except tomlkit.exceptions.ParseError as error:
+                raise ValueError("Invalid project Codex configuration") from error
+            before = dumps_toml(sandbox_preview(config, "codex"))
+            record = reconcile(
+                config, "codex", local_binding, sandbox_ownership.get("codex")
+            )
+            if record is None:
+                sandbox_ownership.pop("codex", None)
+            else:
+                sandbox_ownership["codex"] = record
+            add(
+                config_path,
+                tomlkit.dumps(config),
+                preview=(before, dumps_toml(sandbox_preview(config, "codex"))),
+            )
+        elif config_text is None:
+            add(config_path, owner.header)
 
     if "claude" in harnesses:
         settings_text = _read(root, SETTINGS_PATH)
@@ -263,7 +311,12 @@ def plan_project(
         if not isinstance(sandbox, dict):
             raise ValueError(f"Invalid sandbox in {SETTINGS_PATH}")
         exclusions = _strings(sandbox.get("excludedCommands", []), SETTINGS_PATH)
-        before_preview = _permission_preview(current_permissions, exclusions)
+        local_binding = policy.sandbox.local_binding_for("claude")
+        manage_binding = local_binding is not None or "claude" in sandbox_ownership
+        before_binding = current_value(settings, "claude") if manage_binding else None
+        before_preview = _permission_preview(
+            current_permissions, exclusions, before_binding
+        )
         owned: dict[str, list[str]] = {}
         for effect in ("allow", "ask", "deny"):
             if effect not in desired and effect not in permissions:
@@ -282,6 +335,15 @@ def plan_project(
         if desired_exclusions or old_exclusions:
             sandbox["excludedCommands"] = exclusions
             settings["sandbox"] = sandbox
+        if manage_binding:
+            record = reconcile(
+                settings, "claude", local_binding, sandbox_ownership.get("claude")
+            )
+            if record is None:
+                sandbox_ownership.pop("claude", None)
+            else:
+                sandbox_ownership["claude"] = record
+        after_binding = current_value(settings, "claude") if manage_binding else None
         permissions = owned
         old_exclusions = owned_exclusions
         # Diff only policy fields, never env, hooks, MCP credentials, or runtime values.
@@ -290,7 +352,7 @@ def plan_project(
             _json(settings),
             preview=(
                 before_preview,
-                _permission_preview(current_permissions, exclusions),
+                _permission_preview(current_permissions, exclusions, after_binding),
             ),
         )
 
@@ -298,11 +360,12 @@ def plan_project(
         owner.state_path,
         _json(
             {
-                "schema": 1,
+                "schema": 2,
                 "policy": policy.name,
                 "repository": repository.slug,
                 "claude_permissions": permissions,
                 "claude_exclusions": old_exclusions,
+                "sandbox_settings": sandbox_ownership,
             }
         ),
     )
@@ -376,7 +439,9 @@ def _json(value: dict) -> str:
     return json.dumps(value, indent=2) + "\n"
 
 
-def _permission_preview(permissions: dict, exclusions: list[str]) -> str:
+def _permission_preview(
+    permissions: dict, exclusions: list[str], local_binding: bool | None = None
+) -> str:
     return _json(
         {
             "permissions": {
@@ -384,6 +449,13 @@ def _permission_preview(permissions: dict, exclusions: list[str]) -> str:
                 for key in ("allow", "ask", "deny")
                 if key in permissions
             },
-            "sandbox": {"excludedCommands": exclusions},
+            "sandbox": {
+                "excludedCommands": exclusions,
+                **(
+                    {"network": {"allowLocalBinding": local_binding}}
+                    if local_binding is not None
+                    else {}
+                ),
+            },
         }
     )

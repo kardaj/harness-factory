@@ -288,3 +288,22 @@ harnesses = ["claude"]
 ```
 
 Applications that stage a whole rendered tree should pass `exact_paths=addon_tree_paths(expected)` and include `retired_addon_files(found, expected)` in their retirement paths for both `sync_tree` and `diff_trees`; both helpers come from `harness_factory.addons`. Exact replacement prevents removed MCP servers or JSON asset keys from lingering. The standard `deploy_rendered_home` handles ownership, exact replacement, private MCP modes, and retirement itself. Profile files are copied as inactive data when a home is deployed; only the explicit session launcher activates them.
+
+## Local binding at environment and project scope
+
+`sandbox.allow_local_binding` is an optional boolean shared by global environment sandbox policy and `ProjectPolicy.sandbox`. `true` allows local binding, `false` explicitly disables it, and an unset value leaves existing/native settings unmanaged. It can also be a `HarnessScopedValue` to configure Claude and Codex independently. The global `SandboxPolicy` and the smaller `ProjectSandboxPolicy` expose the same property.
+
+In environment TOML, declare the flag with schema version 3. Files using versions 1 and 2 continue to load with their existing semantics; change `schema_version` to `3` before adding the new field. Environment inheritance follows the usual scalar override rule. A shared value supplies defaults for all child environments, and an individual environment can override it.
+
+```toml
+schema_version = 3
+
+[sandbox]
+allow_local_binding = false
+```
+
+For a project, use `sandbox=ProjectSandboxPolicy(allow_local_binding=True)` on its `ProjectPolicy`. An explicit project value overrides the corresponding global default in that project's trusted local configuration. The project layer changes only Claude's `sandbox.network.allowLocalBinding` and Codex's `features.network_proxy.allow_local_binding`; command approvals and sandbox-excluded commands remain separate controls.
+
+Codex requires its network proxy to be active for this control. The environment adapter enables the proxy when the global field is configured. A true global value permits command networking for local services, while existing domain rules continue to control proxied outbound traffic; an otherwise network-disabled policy gains no public destination allowlist. If an environment already grants unrestricted networking with `network=true` and no domain list, the adapter preserves public Internet access with a wildcard allow rule rather than silently dropping it. Project overrides inherit the environment's network/proxy configuration. Codex's native setting additionally permits direct loopback connections and relaxes private-network destination checks, so use provider-scoped values when only one provider should receive that broader access. Higher-priority managed requirements remain authoritative.
+
+Project ownership schema 2 adds scalar-setting history; the loader migrates schema 1 records transparently. While configured, a project override is reconciled to policy. When removed, the deployer restores the original local boolean, or removes the managed key to inherit the global policy if no local value originally existed. A manual edit made after the last application is preserved on retirement. Newly created empty tables are removed only when owned; unrelated settings, TOML comments, secrets, and unselected providers survive. Config diffs show only the managed permission fields, never unrelated configuration values.

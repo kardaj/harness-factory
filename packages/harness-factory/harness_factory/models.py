@@ -44,8 +44,11 @@ class SandboxPolicy:
     network_allowed_domains: tuple[str, ...] = ()
     network_allowed_mach_lookups: tuple[str, ...] = ()
     network_allowed_unix_sockets: tuple[Path, ...] = ()
+    allow_local_binding: bool | HarnessScopedValue | None = None
 
     def __post_init__(self) -> None:
+        for harness in ("codex", "claude"):
+            self.local_binding_for(harness)
         if self.mode != "workspace-write":
             raise ValueError("SandboxPolicy only supports workspace-write mode")
         if has_relative_root(self.writable_roots):
@@ -55,6 +58,9 @@ class SandboxPolicy:
         ):
             raise ValueError("SandboxPolicy Unix sockets must be absolute paths")
 
+    def local_binding_for(self, harness: HarnessName) -> bool | None:
+        return local_binding_value(self.allow_local_binding, harness)
+
     def writable_roots_for(self, harness: HarnessName) -> tuple[Path, ...]:
         """Resolve harness-scoped roots, dropping those for other harnesses."""
         resolved = (
@@ -62,6 +68,19 @@ class SandboxPolicy:
             for root in self.writable_roots
         )
         return tuple(root for root in resolved if root is not None)
+
+
+def local_binding_value(
+    value: bool | HarnessScopedValue | None, harness: HarnessName
+) -> bool | None:
+    resolved = (
+        value.resolve(harness) if isinstance(value, HarnessScopedValue) else value
+    )
+    if resolved is not None and type(resolved) is not bool:
+        raise ValueError(
+            "sandbox.allow_local_binding must be a boolean, a harness-scoped boolean, or None"
+        )
+    return resolved
 
 
 @dataclass(frozen=True)

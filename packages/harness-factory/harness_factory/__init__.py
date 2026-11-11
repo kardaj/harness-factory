@@ -109,6 +109,7 @@ from harness_factory.tools import (
 )
 from harness_factory.projects import (
     ProjectPolicy,
+    ProjectSandboxPolicy,
     ProjectRepository,
     discover_repositories,
     github_slug,
@@ -150,6 +151,7 @@ __all__ = [
     "OnePasswordSecret",
     "OpOnePasswordClient",
     "ProjectPolicy",
+    "ProjectSandboxPolicy",
     "ProjectRepository",
     "ReasoningTier",
     "RenderedHomeMissingError",

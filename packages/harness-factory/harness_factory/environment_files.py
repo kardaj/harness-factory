@@ -49,7 +49,7 @@ from harness_manifest import (
     sandbox_exclusions,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _SCALARS = (
     "reasoning_tier",
@@ -140,10 +140,14 @@ def _load(path: Path, variables: Mapping[str, str]) -> dict[str, Any]:
     except tomllib.TOMLDecodeError as error:
         raise ValueError(f"invalid TOML in {path}: {error}") from error
     version = data.pop("schema_version", None)
-    if type(version) is not int or version not in (1, SCHEMA_VERSION):
+    if type(version) is not int or version not in (1, 2, SCHEMA_VERSION):
         raise ValueError(
             f"{path}: unsupported schema_version {version!r} "
             f"(supported: {SCHEMA_VERSION})"
+        )
+    if version < 3 and "allow_local_binding" in data.get("sandbox", {}):
+        raise ValueError(
+            f"{path}: sandbox.allow_local_binding requires schema_version 3; migrate by changing schema_version to 3"
         )
     if version == 1 and (
         "skill_bundles" in data
@@ -381,6 +385,8 @@ def _sandbox_fields(spec: Any) -> dict[str, Any]:
                 )
                 for root in value
             )
+        elif key == "allow_local_binding":
+            converted[key] = _scoped(value)
         elif key == "network_allowed_unix_sockets":
             converted[key] = tuple(Path(socket) for socket in value)
         elif isinstance(value, list):

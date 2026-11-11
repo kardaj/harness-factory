@@ -301,19 +301,25 @@ class CodexAdapter(HarnessAdapter):
             "writable_roots": _sorted_unique(
                 str(root) for root in sandbox.writable_roots_for("codex")
             ),
-            "network_access": sandbox.network or bool(sandbox.network_allowed_domains),
+            "network_access": sandbox.network
+            or bool(sandbox.network_allowed_domains)
+            or sandbox.local_binding_for("codex") is True,
         }
 
     @staticmethod
     def _render_network_proxy(sandbox: SandboxPolicy) -> dict[str, Any]:
-        if not sandbox.network_allowed_domains:
+        local_binding = sandbox.local_binding_for("codex")
+        if not sandbox.network_allowed_domains and local_binding is None:
             return {}
-        return {
-            "enabled": True,
-            "domains": dict.fromkeys(
-                _sorted_unique(sandbox.network_allowed_domains), "allow"
-            ),
-        }
+        domains = dict.fromkeys(
+            _sorted_unique(sandbox.network_allowed_domains), "allow"
+        )
+        if not domains and sandbox.network:
+            domains = {"*": "allow"}
+        result: dict[str, Any] = {"enabled": True, "domains": domains}
+        if local_binding is not None:
+            result["allow_local_binding"] = local_binding
+        return result
 
     def _render_shell_environment(self, env_vars: tuple[EnvVar, ...]) -> dict[str, Any]:
         rendered: dict[str, Any] = {"inherit": "core"}
@@ -586,6 +592,9 @@ class ClaudeAdapter(HarnessAdapter):
         if allow_write:
             rendered["filesystem"] = {"allowWrite": _sorted_unique(allow_write)}
         network: dict[str, Any] = {}
+        local_binding = sandbox.local_binding_for("claude")
+        if local_binding is not None:
+            network["allowLocalBinding"] = local_binding
         if sandbox.network_allowed_domains:
             network["allowedDomains"] = _sorted_unique(sandbox.network_allowed_domains)
         if sandbox.network_allowed_mach_lookups:
