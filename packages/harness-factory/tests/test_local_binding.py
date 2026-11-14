@@ -146,7 +146,7 @@ class LocalBindingTests(unittest.TestCase):
         self.assertEqual(self.values(), (None, None))
         state = json.loads((self.root / self.owner.state_path).read_text())
         self.assertEqual(state["sandbox_settings"], {})
-        self.assertEqual(state["schema"], 2)
+        self.assertEqual(state["schema"], 3)
 
     def test_original_settings_comments_and_secret_values_survive_without_diff_leaks(
         self,
@@ -220,7 +220,7 @@ class LocalBindingTests(unittest.TestCase):
         self.apply()
         path = self.root / self.owner.state_path
         state = json.loads(path.read_text())
-        self.assertEqual(state["schema"], 2)
+        self.assertEqual(state["schema"], 3)
         before = (self.root / ".codex/config.toml").read_text()
         state["sandbox_settings"]["codex"]["created_tables"] = ["unrelated.secret"]
         path.write_text(json.dumps(state))

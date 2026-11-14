@@ -6,12 +6,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from harness_factory import RuleSet, allow, shell
+from harness_factory import RuleSet, allow, deny, shell
 from harness_factory.projects import (
     SETTINGS_PATH,
+    SHARED_SETTINGS_PATH,
     ProjectOwner,
     ProjectPolicy,
     ProjectRepository,
+    ProjectSandboxPolicy,
     discover_repositories,
     github_slug,
     inspect_repository,
@@ -248,6 +250,106 @@ class ProjectPolicyTests(unittest.TestCase):
             json.loads((self.root / SETTINGS_PATH).read_text())["permissions"]["allow"],
             [],
         )
+
+    def test_shared_scope_writes_committed_settings_and_keeps_binding_local(
+        self,
+    ) -> None:
+        shared = {"permissions": {"deny": ["Bash(manual *)"]}, "env": {"A": "1"}}
+        self.write(SHARED_SETTINGS_PATH, json.dumps(shared))
+        policy = replace(
+            self.policy,
+            rules=(RuleSet(name="guard", rules=(deny(shell("deploy")),)),),
+            sandbox=ProjectSandboxPolicy(allow_local_binding=True),
+            claude_rules="shared",
+        )
+        plan_project(self.repository, policy, owner=OWNER).apply()
+        updated = json.loads((self.root / SHARED_SETTINGS_PATH).read_text())
+        self.assertEqual(
+            updated["permissions"]["deny"], ["Bash(manual *)", "Bash(deploy *)"]
+        )
+        self.assertEqual(updated["env"], {"A": "1"})
+        self.assertNotIn("sandbox", updated)
+        local = json.loads((self.root / SETTINGS_PATH).read_text())
+        self.assertEqual(local, {"sandbox": {"network": {"allowLocalBinding": True}}})
+        state = json.loads((self.root / STATE_PATH).read_text())
+        self.assertEqual((state["schema"], state["claude_rules"]), (3, "shared"))
+        self.assertEqual(plan_project(self.repository, policy, owner=OWNER).changes, ())
+
+    def test_shared_scope_without_local_settings_creates_no_local_file(self) -> None:
+        policy = replace(self.policy, claude_rules="shared")
+        plan_project(self.repository, policy, owner=OWNER).apply()
+        self.assertFalse((self.root / SETTINGS_PATH).exists())
+        self.assertEqual(
+            json.loads((self.root / SHARED_SETTINGS_PATH).read_text()),
+            {"permissions": {"allow": ["Bash(tools/lint.sh *)"]}},
+        )
+
+    def test_moving_scope_retires_owned_entries_from_the_previous_file(self) -> None:
+        self.write(SETTINGS_PATH, '{"permissions":{"allow":["Bash(manual *)"]}}')
+        plan_project(self.repository, self.policy, owner=OWNER).apply()
+        shared = replace(self.policy, claude_rules="shared")
+        plan_project(self.repository, shared, owner=OWNER).apply()
+        self.assertEqual(
+            json.loads((self.root / SETTINGS_PATH).read_text())["permissions"],
+            {"allow": ["Bash(manual *)"]},
+        )
+        self.assertEqual(
+            json.loads((self.root / SHARED_SETTINGS_PATH).read_text())["permissions"],
+            {"allow": ["Bash(tools/lint.sh *)"]},
+        )
+        plan_project(self.repository, self.policy, owner=OWNER).apply()
+        self.assertEqual(
+            json.loads((self.root / SHARED_SETTINGS_PATH).read_text())["permissions"],
+            {"allow": []},
+        )
+        self.assertEqual(
+            json.loads((self.root / SETTINGS_PATH).read_text())["permissions"]["allow"],
+            ["Bash(manual *)", "Bash(tools/lint.sh *)"],
+        )
+
+    def test_schema_2_ownership_is_read_as_local(self) -> None:
+        self.write(SETTINGS_PATH, '{"permissions":{"allow":["Bash(old *)"]}}')
+        self.write(
+            STATE_PATH,
+            json.dumps(
+                {
+                    "schema": 2,
+                    "policy": "app",
+                    "repository": "example/app",
+                    "claude_permissions": {"allow": ["Bash(old *)"]},
+                    "claude_exclusions": [],
+                    "sandbox_settings": {},
+                }
+            ),
+        )
+        plan_project(
+            self.repository, replace(self.policy, claude_rules="shared"), owner=OWNER
+        ).apply()
+        self.assertEqual(
+            json.loads((self.root / SETTINGS_PATH).read_text())["permissions"],
+            {"allow": []},
+        )
+        self.assertEqual(json.loads((self.root / STATE_PATH).read_text())["schema"], 3)
+
+    def test_invalid_claude_rules_scope_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            replace(self.policy, claude_rules="global")
+        self.write(
+            STATE_PATH,
+            json.dumps(
+                {
+                    "schema": 3,
+                    "policy": "app",
+                    "repository": "example/app",
+                    "claude_permissions": {},
+                    "claude_exclusions": [],
+                    "sandbox_settings": {},
+                    "claude_rules": "global",
+                }
+            ),
+        )
+        with self.assertRaises(ValueError):
+            plan_project(self.repository, self.policy, owner=OWNER)
 
     def test_invalid_settings_or_state_fail_before_any_write(self) -> None:
         for path, text in (

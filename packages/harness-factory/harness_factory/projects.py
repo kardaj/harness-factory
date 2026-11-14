@@ -15,23 +15,32 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal, get_args
 from urllib.parse import urlsplit
 
 import tomlkit
+from harness_manifest.rules import RuleSet
 
 from harness_factory.adapters import CodexAdapter, render_claude_rules
+from harness_factory.models import HarnessName
 from harness_factory.project_sandbox import (
     ProjectSandboxPolicy,
     current_value,
     load_ownership,
-    preview as sandbox_preview,
     reconcile,
 )
-from harness_factory.models import HarnessName
+from harness_factory.project_sandbox import (
+    preview as sandbox_preview,
+)
 from harness_factory.serializers import dumps_toml
-from harness_manifest.rules import RuleSet
 
 SETTINGS_PATH = Path(".claude/settings.local.json")
+SHARED_SETTINGS_PATH = Path(".claude/settings.json")
+
+# Where a policy's Claude permissions and sandbox exclusions go: the personal
+# settings file, or the shared one a repository commits for every collaborator.
+ClaudeRulesScope = Literal["local", "shared"]
+_CLAUDE_RULES_PATHS = {"local": SETTINGS_PATH, "shared": SHARED_SETTINGS_PATH}
 
 
 @dataclass(frozen=True)
@@ -96,8 +105,11 @@ class ProjectPolicy:
     repositories: tuple[str, ...]
     rules: tuple[RuleSet, ...] = ()
     sandbox: ProjectSandboxPolicy = field(default_factory=ProjectSandboxPolicy)
+    claude_rules: ClaudeRulesScope = "local"
 
     def __post_init__(self) -> None:
+        if self.claude_rules not in get_args(ClaudeRulesScope):
+            raise ValueError("ProjectPolicy.claude_rules must be 'local' or 'shared'")
         if not isinstance(self.sandbox, ProjectSandboxPolicy):
             raise ValueError("ProjectPolicy.sandbox must be a ProjectSandboxPolicy")
         if not self.name or not self.repositories:
@@ -218,18 +230,27 @@ def plan_project(
     state_text = _read(root, owner.state_path)
     state = _object(state_text, owner.state_path)
     if state_text is not None and (
-        type(state.get("schema")) is not int or state["schema"] not in (1, 2)
+        type(state.get("schema")) is not int or state["schema"] not in (1, 2, 3)
     ):
         raise ValueError(f"Unsupported project ownership schema in {owner.state_path}")
-    if state.get("schema") == 2 and set(state) != {
+    schema_2_keys = {
         "schema",
         "policy",
         "repository",
         "claude_permissions",
         "claude_exclusions",
         "sandbox_settings",
-    }:
+    }
+    if (state.get("schema") == 2 and set(state) != schema_2_keys) or (
+        state.get("schema") == 3
+        and (
+            set(state) != schema_2_keys | {"claude_rules"}
+            or state["claude_rules"] not in get_args(ClaudeRulesScope)
+        )
+    ):
         raise ValueError(f"Invalid project ownership schema in {owner.state_path}")
+    # Schemas 1 and 2 kept every owned Claude entry in the personal settings file.
+    owned_scope: ClaudeRulesScope = state.get("claude_rules", "local")
     if state.get("schema") == 1 and "sandbox_settings" in state:
         raise ValueError("Project sandbox ownership requires schema 2")
     sandbox_ownership = load_ownership(state.get("sandbox_settings", {}))
@@ -291,8 +312,11 @@ def plan_project(
             add(config_path, owner.header)
 
     if "claude" in harnesses:
-        settings_text = _read(root, SETTINGS_PATH)
-        settings = _object(settings_text, SETTINGS_PATH)
+        rules_path = _CLAUDE_RULES_PATHS[policy.claude_rules]
+        owned_path = _CLAUDE_RULES_PATHS[owned_scope]
+        paths = list(dict.fromkeys((SETTINGS_PATH, owned_path, rules_path)))
+        settings = {path: _object(_read(root, path), path) for path in paths}
+        sections = {path: _sections(settings[path], path) for path in paths}
         desired = render_claude_rules(policy.rules)
         desired_exclusions = list(
             dict.fromkeys(
@@ -301,71 +325,79 @@ def plan_project(
                 for command in rule_set.sandbox_excluded_commands
             )
         )
-        current_permissions = settings.get("permissions", {})
-        if not isinstance(current_permissions, dict):
-            raise ValueError(f"Invalid permissions in {SETTINGS_PATH}")
-        for effect in ("allow", "ask", "deny"):
-            if effect in current_permissions:
-                _strings(current_permissions[effect], SETTINGS_PATH)
-        sandbox = settings.get("sandbox", {})
-        if not isinstance(sandbox, dict):
-            raise ValueError(f"Invalid sandbox in {SETTINGS_PATH}")
-        exclusions = _strings(sandbox.get("excludedCommands", []), SETTINGS_PATH)
         local_binding = policy.sandbox.local_binding_for("claude")
         manage_binding = local_binding is not None or "claude" in sandbox_ownership
-        before_binding = current_value(settings, "claude") if manage_binding else None
-        before_preview = _permission_preview(
-            current_permissions, exclusions, before_binding
-        )
-        owned: dict[str, list[str]] = {}
-        for effect in ("allow", "ask", "deny"):
-            if effect not in desired and effect not in permissions:
-                continue
-            existing = current_permissions.get(effect, [])
-            updated, additions = _overlay_entries(
-                existing, permissions.get(effect, []), desired.get(effect, [])
+        previews = {
+            path: _permission_preview(
+                *sections[path],
+                current_value(settings[path], "claude")
+                if manage_binding and path == SETTINGS_PATH
+                else None,
             )
-            current_permissions[effect] = updated
-            owned[effect] = additions
-        if current_permissions:
-            settings["permissions"] = current_permissions
-        exclusions, owned_exclusions = _overlay_entries(
-            exclusions, old_exclusions, desired_exclusions
+            for path in paths
+        }
+        if owned_path != rules_path:
+            # The scope moved: retire what this policy owned from the old file.
+            _overlay_permissions(
+                settings[owned_path],
+                *sections[owned_path],
+                permissions,
+                old_exclusions,
+                {},
+                [],
+            )
+            permissions, old_exclusions = {}, []
+        permissions, old_exclusions = _overlay_permissions(
+            settings[rules_path],
+            *sections[rules_path],
+            permissions,
+            old_exclusions,
+            desired,
+            desired_exclusions,
         )
-        if desired_exclusions or old_exclusions:
-            sandbox["excludedCommands"] = exclusions
-            settings["sandbox"] = sandbox
         if manage_binding:
             record = reconcile(
-                settings, "claude", local_binding, sandbox_ownership.get("claude")
+                settings[SETTINGS_PATH],
+                "claude",
+                local_binding,
+                sandbox_ownership.get("claude"),
             )
             if record is None:
                 sandbox_ownership.pop("claude", None)
             else:
                 sandbox_ownership["claude"] = record
-        after_binding = current_value(settings, "claude") if manage_binding else None
-        permissions = owned
-        old_exclusions = owned_exclusions
-        # Diff only policy fields, never env, hooks, MCP credentials, or runtime values.
-        add(
-            SETTINGS_PATH,
-            _json(settings),
-            preview=(
-                before_preview,
-                _permission_preview(current_permissions, exclusions, after_binding),
-            ),
-        )
+        for path in paths:
+            if path != rules_path and not settings[path] and _read(root, path) is None:
+                continue
+            permissions_section, exclusions = _sections(settings[path], path)
+            # Diff only policy fields, never env, hooks, MCP credentials, or runtime values.
+            add(
+                path,
+                _json(settings[path]),
+                preview=(
+                    previews[path],
+                    _permission_preview(
+                        permissions_section,
+                        exclusions,
+                        current_value(settings[path], "claude")
+                        if manage_binding and path == SETTINGS_PATH
+                        else None,
+                    ),
+                ),
+            )
+        owned_scope = policy.claude_rules
 
     add(
         owner.state_path,
         _json(
             {
-                "schema": 2,
+                "schema": 3,
                 "policy": policy.name,
                 "repository": repository.slug,
                 "claude_permissions": permissions,
                 "claude_exclusions": old_exclusions,
                 "sandbox_settings": sandbox_ownership,
+                "claude_rules": owned_scope,
             }
         ),
     )
@@ -433,6 +465,48 @@ def _overlay_entries(
             remaining.remove(entry)
     additions = [entry for entry in dict.fromkeys(desired) if entry not in remaining]
     return remaining + additions, additions
+
+
+def _sections(settings: dict, path: Path) -> tuple[dict, list[str]]:
+    """Validate and return the permission and sandbox-exclusion sections."""
+    permissions = settings.get("permissions", {})
+    if not isinstance(permissions, dict):
+        raise ValueError(f"Invalid permissions in {path}")
+    for effect in ("allow", "ask", "deny"):
+        if effect in permissions:
+            _strings(permissions[effect], path)
+    sandbox = settings.get("sandbox", {})
+    if not isinstance(sandbox, dict):
+        raise ValueError(f"Invalid sandbox in {path}")
+    return permissions, _strings(sandbox.get("excludedCommands", []), path)
+
+
+def _overlay_permissions(
+    settings: dict,
+    current: dict,
+    exclusions: list[str],
+    owned: dict[str, list[str]],
+    owned_exclusions: list[str],
+    desired: dict[str, list[str]],
+    desired_exclusions: list[str],
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Replace owned entries with desired ones; return the new ownership."""
+    additions: dict[str, list[str]] = {}
+    for effect in ("allow", "ask", "deny"):
+        if effect not in desired and effect not in owned:
+            continue
+        current[effect], additions[effect] = _overlay_entries(
+            current.get(effect, []), owned.get(effect, []), desired.get(effect, [])
+        )
+    if current:
+        settings["permissions"] = current
+    exclusions, added_exclusions = _overlay_entries(
+        exclusions, owned_exclusions, desired_exclusions
+    )
+    if desired_exclusions or owned_exclusions:
+        sandbox = settings.setdefault("sandbox", {})
+        sandbox["excludedCommands"] = exclusions
+    return additions, added_exclusions
 
 
 def _json(value: dict) -> str:

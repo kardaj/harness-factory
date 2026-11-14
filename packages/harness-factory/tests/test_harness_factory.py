@@ -584,7 +584,7 @@ class CodexAdapterTests(unittest.TestCase):
             rules=(
                 RuleSet(
                     name="simulator",
-                    sandbox_excluded_commands=("xcrun *", "swift *"),
+                    sandbox_excluded_commands=("xcrun *", "swift *", "xcrun *"),
                     sandbox_exclusion_reason="CoreSimulator is unreachable.",
                     rules=(allow(shell("xcrun")),),
                 ),
@@ -604,10 +604,12 @@ class CodexAdapterTests(unittest.TestCase):
             "## Shared\n\nBoth.\n\n"
             "## Sandbox-Excluded Commands\n\n"
             f"{CLAUDE_SANDBOX_EXCLUSION_INTRO}\n\n"
-            "- `xcrun *`, `swift *`: CoreSimulator is unreachable.\n\n"
+            "- `swift *`\n- `xcrun *`\n\n"
             "## Later",
             claude_instructions,
         )
+
+        self.assertNotIn("CoreSimulator is unreachable.", claude_instructions)
 
     def test_instruction_file_body_headings_must_be_nested(self) -> None:
         with TemporaryDirectory() as tmp:

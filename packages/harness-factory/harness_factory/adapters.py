@@ -1015,12 +1015,12 @@ CLAUDE_SANDBOX_EXCLUSION_INTRO = (
 def _claude_sandbox_exclusion_block(
     rule_sets: tuple[RuleSet, ...],
 ) -> InstructionBlock | None:
-    entries = dict.fromkeys(
-        f"- {', '.join(f'`{command}`' for command in rule_set.sandbox_excluded_commands)}"
-        f": {rule_set.sandbox_exclusion_reason}"
+    commands = _sorted_unique(
+        command
         for rule_set in rule_sets
-        if rule_set.sandbox_excluded_commands
+        for command in rule_set.sandbox_excluded_commands
     )
+    entries = [f"- `{command}`" for command in commands]
     if not entries:
         return None
     body = "\n".join((CLAUDE_SANDBOX_EXCLUSION_INTRO, "", *entries))
