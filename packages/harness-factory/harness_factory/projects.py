@@ -13,12 +13,13 @@ import re
 import stat
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, get_args
 from urllib.parse import urlsplit
 
 import tomlkit
+from harness_manifest.rule_files import load_rule_set
 from harness_manifest.rules import RuleSet
 
 from harness_factory.adapters import CodexAdapter, render_claude_rules
@@ -106,8 +107,23 @@ class ProjectPolicy:
     rules: tuple[RuleSet, ...] = ()
     sandbox: ProjectSandboxPolicy = field(default_factory=ProjectSandboxPolicy)
     claude_rules: ClaudeRulesScope = "local"
+    rule_files: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.rule_files, tuple)
+            or any(
+                not isinstance(path, Path)
+                or path.is_absolute()
+                or ".." in path.parts
+                or path.suffix != ".toml"
+                for path in self.rule_files
+            )
+            or len(set(self.rule_files)) != len(self.rule_files)
+        ):
+            raise ValueError(
+                "ProjectPolicy.rule_files must be unique relative TOML paths"
+            )
         if self.claude_rules not in get_args(ClaudeRulesScope):
             raise ValueError("ProjectPolicy.claude_rules must be 'local' or 'shared'")
         if not isinstance(self.sandbox, ProjectSandboxPolicy):
@@ -194,9 +210,13 @@ class ProjectFileChange:
 class ProjectPlan:
     root: Path
     changes: tuple[ProjectFileChange, ...]
+    rule_sources: tuple[tuple[Path, str], ...] = ()
 
     def apply(self) -> None:
         """Recheck the whole plan before writing; atomically replace each file."""
+        for path, contents in self.rule_sources:
+            if _read(self.root, path) != contents:
+                raise ValueError(f"Project rule source changed during planning: {path}")
         for change in self.changes:
             if _read(self.root, change.path) != change.before:
                 raise ValueError(f"Project file changed during planning: {change.path}")
@@ -227,6 +247,20 @@ def plan_project(
 ) -> ProjectPlan:
     """Plan agent configuration changes without reading or writing repository prose."""
     root = repository.root
+    sources = []
+    rules = list(policy.rules)
+    for path in policy.rule_files:
+        contents = _read(root, path)
+        if contents is None:
+            raise ValueError(f"Missing project rule source: {path}")
+        loaded = load_rule_set(root / path)
+        if _read(root, path) != contents:
+            raise ValueError(f"Project rule source changed during planning: {path}")
+        sources.append((path, contents))
+        rules.append(loaded)
+    if len({rule.name for rule in rules}) != len(rules):
+        raise ValueError("Duplicate project rule set names")
+    policy = replace(policy, rules=tuple(rules))
     state_text = _read(root, owner.state_path)
     state = _object(state_text, owner.state_path)
     if state_text is not None and (
@@ -401,7 +435,7 @@ def plan_project(
             }
         ),
     )
-    return ProjectPlan(root, tuple(changes))
+    return ProjectPlan(root, tuple(changes), tuple(sources))
 
 
 def _git(path: Path, *arguments: str) -> str:
